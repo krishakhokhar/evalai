@@ -62,8 +62,8 @@ export default function Login({ role = 'student' }) {
     <div className="auth">
       <div className="auth__card">
         <div className="auth__brand">
-          <img className="sidebar__mark" src="/evalai-logo-mark.png" alt="EvalAI logo" />
-          EvalAI
+          <img className="auth__logo" src="/evalai-logo-mark.png" alt="EvalAI logo" />
+          <span className="auth__brand-name">EvalAI</span>
         </div>
         <p className="auth__tagline">Assess. Evaluate. Improve.</p>
 
