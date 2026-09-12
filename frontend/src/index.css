@@ -545,8 +545,8 @@ input, select, textarea {
   text-align: center;
 }
 .auth__logo {
-  width: 64px;
-  height: 64px;
+  width: 100px;
+  height: 100px;
   object-fit: contain;
 }
 .auth__brand-name {
@@ -862,7 +862,7 @@ textarea.input {
   .content { padding: 20px 16px 40px; }
   .topbar { padding: 0 16px; }
   .topbar__user { display: none; }
-  .auth__logo { width: 52px; height: 52px; }
+  .auth__logo { width: 80px; height: 80px; }
 }
 
 /* ---- Exam question navigator ---- */
