@@ -9,6 +9,9 @@ build
 dist-ssr
 *.local
 
+# Vercel CLI local project link (org/project IDs) — never commit
+.vercel
+
 # env
 .env
 .env.*
