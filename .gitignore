@@ -1,0 +1,28 @@
+# dependencies
+node_modules
+**/node_modules
+
+# builds
+dist
+frontend/dist
+build
+dist-ssr
+*.local
+
+# env
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env
+
+# uploads (student project archives)
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# logs / editor / OS
+*.log
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db

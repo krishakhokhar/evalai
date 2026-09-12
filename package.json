@@ -1,0 +1,22 @@
+{
+  "name": "evalai",
+  "private": true,
+  "version": "1.0.0",
+  "description": "EvalAI — AI-assisted student project evaluation platform (frontend + backend workspaces)",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "npm --workspace frontend run dev",
+    "build": "npm --workspace frontend run build",
+    "lint": "npm --workspace frontend run lint",
+    "preview": "npm --workspace frontend run preview",
+    "server": "npm --workspace backend run start",
+    "server:dev": "npm --workspace backend run dev",
+    "reset-admin": "npm --workspace backend run reset-admin",
+    "test:e2e": "npm --workspace backend run test:e2e",
+    "test:backend": "npm --workspace backend run test:backend",
+    "test:db-down": "npm --workspace backend run test:db-down"
+  }
+}

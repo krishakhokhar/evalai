@@ -1,0 +1,33 @@
+{
+  "name": "evalai-backend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "prestart": "node scripts/free-port.mjs",
+    "start": "node server.js",
+    "predev": "node scripts/free-port.mjs",
+    "dev": "node server.js",
+    "reset-admin": "node scripts/reset-admin.mjs",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:backend": "node scripts/check.mjs",
+    "test:db-down": "node scripts/check-db-down.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.2",
+    "mongoose": "^9.9.4",
+    "multer": "^2.3.0",
+    "pdf-parse": "^2.4.5",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.2.0"
+  }
+}
