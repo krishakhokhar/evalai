@@ -325,6 +325,9 @@ input, select, textarea {
   place-items: center;
   font-size: 14px;
   font-weight: 700;
+  padding: 4px;
+  box-sizing: border-box;
+  object-fit: contain;
 }
 .sidebar__section {
   padding: 16px 12px;

@@ -72,7 +72,7 @@ export default function Register({ role }) {
     <div className="auth">
       <div className="auth__card">
         <div className="auth__brand">
-          <span className="sidebar__mark">E</span>
+          <img className="sidebar__mark" src="/evalai-logo-mark.png" alt="EvalAI logo" />
           EvalAI
         </div>
         <p className="auth__tagline">Assess. Evaluate. Improve.</p>

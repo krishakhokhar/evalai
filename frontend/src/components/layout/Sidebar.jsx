@@ -8,7 +8,7 @@ export default function Sidebar({ role, open, onNavigate }) {
   return (
     <aside className={`sidebar ${open ? 'is-open' : ''}`.trim()}>
       <div className="sidebar__brand">
-        <span className="sidebar__mark">E</span>
+        <img className="sidebar__mark" src="/evalai-logo-mark.png" alt="EvalAI logo" />
         EvalAI
       </div>
       <nav className="sidebar__section">
