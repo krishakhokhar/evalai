@@ -54,68 +54,46 @@ function uniqueOptions(correct, candidates) {
 // title/filename/IDs) and returns { question, correct, distractors }.
 // ---------------------------------------------------------------------------
 
+// Deliberately excludes any "which unit/topic does X belong to" style
+// template — the deterministic engine has no real subject-matter knowledge,
+// so it cannot write a genuinely conceptual question (that needs Gemini), but
+// it must never turn the syllabus's own structure into the quiz either.
 const EASY_TEMPLATES = [
-  ({ topic, unit }) => ({
-    question: `Which of the following is a topic covered under "${unit}"?`,
-    correct: topic,
-    distractors: GENERIC_WRONG.slice(0, 3),
-  }),
-  ({ topic, unit, otherUnits }) => ({
-    question: `"${topic}" belongs to which unit of this syllabus?`,
-    correct: unit,
-    distractors: otherUnits.length ? otherUnits.slice(0, 3) : GENERIC_WRONG.slice(0, 3),
-  }),
-  ({ topic, unit }) => ({
-    question: `Which statement about "${topic}" is correct?`,
-    correct: `"${topic}" is part of the "${unit}" content and can be assessed in this course.`,
-    distractors: [
-      `"${topic}" is not part of this course.`,
-      `"${topic}" belongs to a completely unrelated field of study.`,
-      `"${topic}" was removed from the syllabus and is no longer taught.`,
-    ],
-  }),
-  ({ topic, unit, siblings }) => ({
-    question: `Which of these is NOT directly related to "${unit}"?`,
+  ({ topic, siblings }) => ({
+    question: `Which of these is NOT typically grouped together with "${topic}" as a related concept in this course?`,
     correct: pick(GENERIC_WRONG, topic.length),
-    distractors: siblings.length ? siblings.slice(0, 3) : [topic, `Core ideas of ${topic}`, `Fundamentals of ${unit}`],
+    distractors: siblings.length
+      ? siblings.slice(0, 3)
+      : [`Core aspects of ${topic}`, `Practical use of ${topic}`, `Fundamentals of ${topic}`],
   }),
 ]
 
 const MEDIUM_TEMPLATES = [
-  ({ topic, unit }) => ({
-    question: `A student is studying "${topic}" as part of "${unit}". What should they focus on first?`,
-    correct: `Understanding the fundamentals and expected outcomes of "${topic}"`,
-    distractors: [
-      'Skipping the fundamentals and improvising without guidance',
-      `Ignoring "${unit}" entirely and studying an unrelated subject`,
-      'Memorising unrelated material instead of this topic',
-    ],
-  }),
-  ({ topic, unit, siblings }) => {
+  ({ topic, siblings }) => {
     const sibling = siblings[0]
     if (!sibling) {
       return {
-        question: `How does "${topic}" fit within the broader scope of "${unit}"?`,
-        correct: `It is one of the concepts making up "${unit}" in this syllabus.`,
+        question: `Why is "${topic}" significant enough to be treated as its own concept in this course, rather than a minor detail?`,
+        correct: `Because it represents a distinct concept that students need to understand in its own right.`,
         distractors: [
-          `It has no connection to "${unit}" at all.`,
-          `It replaced everything else taught in "${unit}".`,
-          'It belongs to a different course entirely.',
+          `Because it has no real significance and is only mentioned in passing.`,
+          `Because it is identical to every other concept in the course.`,
+          `Because it was included by mistake.`,
         ],
       }
     }
     return {
-      question: `How does "${topic}" primarily differ from "${sibling}" within "${unit}"?`,
-      correct: `They are distinct concepts within "${unit}", each covering a different aspect of the subject.`,
+      question: `How does "${topic}" primarily differ from "${sibling}"?`,
+      correct: `They are distinct concepts, each covering a different aspect of the subject.`,
       distractors: [
         `They are identical in every respect.`,
-        `"${sibling}" is unrelated to "${unit}".`,
+        `"${sibling}" is unrelated to "${topic}".`,
         `"${topic}" was entirely replaced by "${sibling}".`,
       ],
     }
   },
-  ({ topic, unit }) => ({
-    question: `In a real-world scenario related to "${unit}", which concept below would be most relevant to apply?`,
+  ({ topic }) => ({
+    question: `In a practical, real-world scenario for this course, which concept below would be most relevant to apply?`,
     correct: topic,
     distractors: GENERIC_WRONG.slice(1, 4),
   }),
@@ -153,8 +131,27 @@ const HARD_TEMPLATES = [
 
 const TIER_TEMPLATES = { Easy: EASY_TEMPLATES, Medium: MEDIUM_TEMPLATES, Hard: HARD_TEMPLATES }
 
+// Questions that merely identify/map the syllabus's own structure instead of
+// testing a concept — banned outright, from either the deterministic
+// generator above or Gemini's output below, no matter how they're worded.
+const BANNED_STRUCTURAL_PATTERNS = [
+  /belongs? to which (unit|topic)/i,
+  /which unit (contains|covers|includes|does)/i,
+  /is covered under which unit/i,
+  /which topic is part of/i,
+  /what is the name of this topic/i,
+  /which of the following is a topic (covered under|in|part of)/i,
+  /^"[^"]*"\s+(is|belongs)\s+(covered|part of|under)/i,
+  /what should (a |the )?student.*(focus on first|do first)/i,
+]
+
+function isBannedStructuralQuestion(text) {
+  return BANNED_STRUCTURAL_PATTERNS.some((re) => re.test(text))
+}
+
 function isValidQuestion(q) {
   if (!q.question || !q.question.trim()) return false
+  if (isBannedStructuralQuestion(q.question)) return false
   const opts = ['A', 'B', 'C', 'D'].map((k) => (q.options[k] || '').trim())
   if (opts.some((o) => !o)) return false
   if (new Set(opts.map((o) => o.toLowerCase())).size !== 4) return false
@@ -304,7 +301,7 @@ export function generateFromSyllabus({ syllabus, unit, topic, count, difficulty,
 // ---------------------------------------------------------------------------
 
 const GEMINI_DEFAULT_MODEL = 'gemini-2.5-flash' // current free-tier Gemini model; override with GEMINI_MODEL if needed
-const GEMINI_TIMEOUT_MS = 20000
+const GEMINI_TIMEOUT_MS = 45000 // structured JSON for a larger question count can legitimately take a while
 const MAX_RAW_TEXT_CHARS = 6000 // cap what we send, well within free-tier token limits
 
 const geminiEndpoint = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
@@ -388,13 +385,20 @@ ${scopeBlocks}
 ${rawTextExcerpt ? `\nRELEVANT EXTRACTED SYLLABUS TEXT (use for grounding; may contain minor PDF-extraction formatting artifacts):\n${rawTextExcerpt}\n` : ''}
 RULES:
 1. Generate exactly ${n} multiple-choice questions.
-2. Every question must test real understanding — a definition, a concept, a principle, an application, a comparison between two of the real topics above, a "why" or "how" reasoning question, or a realistic scenario — grounded in what the syllabus text actually says.
-3. Do NOT create a question just by inserting a unit or topic name into a generic template such as "Which of the following best describes '<topic>'?" or "What should a student studying '<topic>' focus on first?".
-4. Each question needs exactly 4 options (A, B, C, D), all meaningful, plausible, and different from each other, with exactly ONE correct answer.
-5. Do not repeat the same question, wording pattern, or near-duplicate question twice.
+2. Every question must test real understanding of the CONCEPT itself — a definition, a principle, a cause/effect relationship, an application, a comparison between two of the real topics above, a "why" or "how" reasoning question, or a realistic scenario — grounded in what the syllabus text actually says. The unit/topic list above is grounding/context ONLY, never the subject of the question.
+3. NEVER generate a question that merely identifies or maps the syllabus's own structure. This includes (but is not limited to) anything shaped like:
+   - "X belongs to which unit?" / "Which unit contains X?" / "X is covered under which unit?"
+   - "Which topic is part of X?" / "What is the name of this topic?"
+   - "Which of the following is a topic in Unit X?"
+   - "What should a student studying X focus on first?"
+   - Any question whose answer can be found just by looking at which unit/topic list a name appears in, without knowing what that concept actually means.
+   Example of a BAD question for a topic named "Role & Function Of Kernel": "'Role & Function Of Kernel' belongs to which unit of this syllabus?" — NEVER do this.
+   Example of a GOOD question for that same topic: "What is the primary role of the kernel in an operating system?" or "Which function of the kernel is responsible for managing communication between hardware and software?"
+4. Each question needs exactly 4 options (A, B, C, D). Every option must be a substantive, plausible statement about the actual concept being tested (a real definition, a real related mechanism, a common misconception) — NEVER a generic filler unrelated to the subject (e.g. never options like "a finance/billing term" or "a networking cable standard" that have nothing to do with the concept). Exactly one option must be correct.
+5. Do not repeat the same question, wording pattern, or near-duplicate question twice. Vary the style across the set: mix definition/concept questions, cause/effect questions, application questions, scenario questions, comparison questions, and principle/function questions — do not make every question follow the same sentence pattern.
 6. ${difficultyLine}
 7. Spread the questions across the different units/topics listed above rather than concentrating on just one.
-8. For every question's "unit" field, copy the matching UNIT_NAME value EXACTLY, character for character — do NOT append the topic list or any other text to it. For "topic", copy one string from that unit's TOPICS_FOR_THIS_UNIT list exactly.
+8. For every question's "unit" field, copy the matching UNIT_NAME value EXACTLY, character for character — do NOT append the topic list or any other text to it. For "topic", copy one string from that unit's TOPICS_FOR_THIS_UNIT list exactly. These two fields are metadata for grounding/filing only — never let the question text itself become "which unit is this topic filed under".
 
 Return ONLY a JSON array of exactly ${n} objects, no prose and no markdown fences, each with this exact shape:
 {"question": string, "options": {"A": string, "B": string, "C": string, "D": string}, "correctAnswer": "A" | "B" | "C" | "D", "difficulty": "Easy" | "Medium" | "Hard", "unit": string, "topic": string}`
