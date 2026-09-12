@@ -191,7 +191,7 @@ export let httpServer = null
 
 export function start() {
   // 1) API listens immediately — independent of MongoDB.
-  httpServer = app.listen(PORT, () => {
+  httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[api] listening on http://localhost:${PORT}`)
   })
   httpServer.on('error', (err) => {
