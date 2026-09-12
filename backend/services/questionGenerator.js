@@ -1,9 +1,16 @@
-// Deterministic question generation, grounded ONLY in the syllabus's actual
-// extracted units/topics — never the syllabus title, filename, or any
-// database/upload ID. This is a rule-based generator (no external AI call);
-// a real provider can be dropped in later via `generateWithProvider` below,
-// gated by AI_PROVIDER + AI_API_KEY in backend/.env, without touching the
-// controller or the rest of this pipeline.
+// Question generation, grounded ONLY in the syllabus's actual extracted
+// units/topics/text — never the syllabus title, filename, or any
+// database/upload ID.
+//
+// Primary path: Gemini (`generateWithProvider`), used whenever
+// GEMINI_API_KEY is set in backend/.env — it is sent the real unit/topic list
+// AND a slice of the actual extracted syllabus text, and asked for strict
+// JSON matching this app's question schema.
+//
+// Fallback path: `generateFromSyllabus`, a deterministic, template-based
+// generator that needs no network/API access. It runs whenever Gemini is not
+// configured, errors, times out, or returns something invalid/insufficient —
+// the app must never break or go silent just because the AI call failed.
 
 const DIFFICULTIES = ['Easy', 'Medium', 'Hard']
 
@@ -289,20 +296,223 @@ export function generateFromSyllabus({ syllabus, unit, topic, count, difficulty,
   return out
 }
 
-// Seam for a real provider. Not used unless configured. When wired up, `args`
-// already carries the real structured syllabus (units/topics) exactly as
-// generateFromSyllabus receives it — never a filename/title/ID.
-export async function generateWithProvider() {
-  throw new Error('No AI provider configured. Using deterministic generator.')
+// ---------------------------------------------------------------------------
+// Gemini provider. Only ever called when GEMINI_API_KEY is set. Kept fully
+// isolated from generateFromSyllabus() above (including its own small copy of
+// the unit/topic pool-building step) so the deterministic fallback is never
+// at risk of being changed by this integration.
+// ---------------------------------------------------------------------------
+
+const GEMINI_DEFAULT_MODEL = 'gemini-2.5-flash' // current free-tier Gemini model; override with GEMINI_MODEL if needed
+const GEMINI_TIMEOUT_MS = 20000
+const MAX_RAW_TEXT_CHARS = 6000 // cap what we send, well within free-tier token limits
+
+const geminiEndpoint = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
+
+// Same eligibility/filtering rules as generateFromSyllabus's inline pool
+// build — duplicated on purpose rather than shared, so nothing here can ever
+// change the behavior of the deterministic fallback.
+function buildTopicPool(syllabus, unit, topic) {
+  const subject = syllabus.subject || syllabus.title || 'the subject'
+  const allUnits = syllabus.units || []
+  let units = allUnits
+  if (unit && unit.toLowerCase() !== 'all') {
+    units = units.filter((u) => u.name === unit)
+  }
+  const pool = []
+  units.forEach((u) => {
+    let topics = u.topics || []
+    if (topic && topic.toLowerCase() !== 'all') topics = topics.filter((t) => t === topic)
+    topics.forEach((t) => pool.push({ unit: u.name, topic: t, siblings: (u.topics || []).filter((x) => x !== t) }))
+  })
+  if (pool.length === 0) {
+    throw new NoSyllabusContentError(
+      unit && unit.toLowerCase() !== 'all'
+        ? `No extracted topics were found for "${unit}". Re-check the uploaded file or pick a different unit.`
+        : 'This syllabus has no extracted units/topics yet. Re-upload a text-based file (not a scanned image) so real content can be extracted before generating questions.',
+    )
+  }
+  return { subject, pool }
+}
+
+const GEMINI_RESPONSE_SCHEMA = {
+  type: 'ARRAY',
+  items: {
+    type: 'OBJECT',
+    properties: {
+      question: { type: 'STRING' },
+      options: {
+        type: 'OBJECT',
+        properties: {
+          A: { type: 'STRING' },
+          B: { type: 'STRING' },
+          C: { type: 'STRING' },
+          D: { type: 'STRING' },
+        },
+        required: ['A', 'B', 'C', 'D'],
+      },
+      correctAnswer: { type: 'STRING', enum: ['A', 'B', 'C', 'D'] },
+      difficulty: { type: 'STRING', enum: ['Easy', 'Medium', 'Hard'] },
+      unit: { type: 'STRING' },
+      topic: { type: 'STRING' },
+    },
+    required: ['question', 'options', 'correctAnswer', 'difficulty', 'unit', 'topic'],
+  },
+}
+
+function buildGeminiPrompt({ subject, pool, n, difficulty, rawTextExcerpt }) {
+  const unitNames = [...new Set(pool.map((p) => p.unit))]
+  // Unit names already contain their own colon (e.g. "Unit 6: Memory
+  // Management"), so a second colon before the topic list is ambiguous — a
+  // model can easily read the whole "name: topics" line as one string. Each
+  // unit gets its own clearly labeled block instead.
+  const scopeBlocks = unitNames
+    .map(
+      (name) =>
+        `UNIT_NAME: ${name}\nTOPICS_FOR_THIS_UNIT: ${pool
+          .filter((p) => p.unit === name)
+          .map((p) => p.topic)
+          .join(' | ')}`,
+    )
+    .join('\n\n')
+
+  const difficultyLine =
+    difficulty && difficulty !== 'Mixed' && DIFFICULTIES.includes(difficulty)
+      ? `Make ALL ${n} questions "${difficulty}" difficulty.`
+      : `Spread the ${n} questions across Easy, Medium and Hard difficulty (roughly one third each).`
+
+  return `You are writing exam-quality multiple-choice questions for the course "${subject}", based STRICTLY on the syllabus content below. Do not use any concept, technology, or fact that is not implied by this content.
+
+UNITS AND TOPICS IN SCOPE:
+${scopeBlocks}
+${rawTextExcerpt ? `\nRELEVANT EXTRACTED SYLLABUS TEXT (use for grounding; may contain minor PDF-extraction formatting artifacts):\n${rawTextExcerpt}\n` : ''}
+RULES:
+1. Generate exactly ${n} multiple-choice questions.
+2. Every question must test real understanding — a definition, a concept, a principle, an application, a comparison between two of the real topics above, a "why" or "how" reasoning question, or a realistic scenario — grounded in what the syllabus text actually says.
+3. Do NOT create a question just by inserting a unit or topic name into a generic template such as "Which of the following best describes '<topic>'?" or "What should a student studying '<topic>' focus on first?".
+4. Each question needs exactly 4 options (A, B, C, D), all meaningful, plausible, and different from each other, with exactly ONE correct answer.
+5. Do not repeat the same question, wording pattern, or near-duplicate question twice.
+6. ${difficultyLine}
+7. Spread the questions across the different units/topics listed above rather than concentrating on just one.
+8. For every question's "unit" field, copy the matching UNIT_NAME value EXACTLY, character for character — do NOT append the topic list or any other text to it. For "topic", copy one string from that unit's TOPICS_FOR_THIS_UNIT list exactly.
+
+Return ONLY a JSON array of exactly ${n} objects, no prose and no markdown fences, each with this exact shape:
+{"question": string, "options": {"A": string, "B": string, "C": string, "D": string}, "correctAnswer": "A" | "B" | "C" | "D", "difficulty": "Easy" | "Medium" | "Hard", "unit": string, "topic": string}`
+}
+
+async function callGemini(prompt) {
+  const apiKey = process.env.GEMINI_API_KEY
+  const model = process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS)
+  let res
+  try {
+    res = await fetch(geminiEndpoint(model), {
+      method: 'POST',
+      // API key travels only in this header — never in the URL, never logged.
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: GEMINI_RESPONSE_SCHEMA,
+          temperature: 0.9,
+        },
+      }),
+      signal: controller.signal,
+    })
+  } finally {
+    clearTimeout(timer)
+  }
+  if (!res.ok) throw new Error(`Gemini API request failed (HTTP ${res.status})`)
+  const data = await res.json()
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text
+  if (!text) throw new Error('Gemini returned an empty response')
+  return JSON.parse(text)
+}
+
+// A real unit name is accepted even if Gemini echoed extra text around it
+// (e.g. appended the topic list) — as long as the real name appears intact,
+// this is still provably grounded in this syllabus, just imperfectly
+// trimmed. Anything that doesn't contain a real unit name at all is rejected.
+function resolveRealUnit(rawUnit, unitNames) {
+  const trimmed = String(rawUnit || '').trim()
+  if (!trimmed) return null
+  if (unitNames.includes(trimmed)) return trimmed
+  const match = unitNames.find((n) => trimmed.startsWith(n) || trimmed.includes(n))
+  return match || null
+}
+
+// Re-checks everything the schema/prompt already asked for, so a malformed,
+// hallucinated (unit/topic not from this syllabus), or duplicate item from
+// Gemini can never reach the Question Bank.
+function validateGeminiQuestions(items, pool, n, subject, marks) {
+  if (!Array.isArray(items)) return []
+  const unitNames = [...new Set(pool.map((p) => p.unit))]
+  const seen = new Set()
+  const out = []
+  for (const raw of items) {
+    if (!raw || typeof raw !== 'object') continue
+    const resolvedUnit = resolveRealUnit(raw.unit, unitNames)
+    if (!resolvedUnit) continue // no real unit name found anywhere in it — reject
+    const q = {
+      question: String(raw.question || '').trim(),
+      options: {
+        A: String(raw.options?.A || '').trim(),
+        B: String(raw.options?.B || '').trim(),
+        C: String(raw.options?.C || '').trim(),
+        D: String(raw.options?.D || '').trim(),
+      },
+      correctAnswer: raw.correctAnswer,
+      subject,
+      unit: resolvedUnit, // always store the clean canonical name, never Gemini's raw echo
+      topic: String(raw.topic || '').trim(),
+      difficulty: DIFFICULTIES.includes(raw.difficulty) ? raw.difficulty : 'Medium',
+      marks,
+      explanation: `Generated by Gemini, grounded in "${resolvedUnit}" of this syllabus.`,
+      origin: 'generated',
+      status: 'draft',
+    }
+    if (!isValidQuestion(q)) continue
+    const key = q.question.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(q)
+    if (out.length === n) break
+  }
+  return out
+}
+
+/**
+ * Calls Gemini with the syllabus's real units/topics + a real text excerpt.
+ * Throws on any problem (missing key, network error, rate limit, malformed
+ * or insufficient output) so the caller falls back to generateFromSyllabus.
+ */
+export async function generateWithProvider({ syllabus, unit, topic, count, difficulty, marks = 1 }) {
+  if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set.')
+  const { subject, pool } = buildTopicPool(syllabus, unit, topic)
+  const n = Math.max(1, Math.min(50, Number(count) || 5))
+  const rawTextExcerpt = String(syllabus.rawText || '').slice(0, MAX_RAW_TEXT_CHARS).trim()
+
+  const prompt = buildGeminiPrompt({ subject, pool, n, difficulty, rawTextExcerpt })
+  const raw = await callGemini(prompt)
+  const valid = validateGeminiQuestions(raw, pool, n, subject, marks)
+
+  if (valid.length < n) {
+    throw new Error(`Gemini returned only ${valid.length}/${n} valid, syllabus-grounded question(s).`)
+  }
+  return valid
 }
 
 export async function generateQuestions(args) {
-  if (process.env.AI_PROVIDER && process.env.AI_API_KEY) {
+  if (process.env.GEMINI_API_KEY) {
     try {
       return await generateWithProvider(args)
     } catch (err) {
       if (err instanceof NoSyllabusContentError) throw err
-      /* fall through to deterministic */
+      // Never let a Gemini problem break question generation — log (no
+      // secrets, no request/response bodies) and use the deterministic path.
+      console.warn(`[questionGenerator] Gemini unavailable, using template fallback: ${err.message}`)
     }
   }
   return generateFromSyllabus(args)
